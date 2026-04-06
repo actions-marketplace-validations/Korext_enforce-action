@@ -77,11 +77,12 @@ jobs:
           fail-on-violations: 'true'
 
       - name: Verify workflow failed
-        if: steps.korext.outcome == 'success'
+        if: ${{ steps.korext.outcome == 'success' }}
         run: |
           echo "::error::Expected action to fail on violations but it passed"
           exit 1
 
       - name: Confirm expected failure
-        if: steps.korext.outcome == 'failure'
-        run: echo "PASS: Action correctly failed on critical/high violations"
+        if: ${{ steps.korext.outcome == 'failure' }}
+        run: |
+          echo "PASS: Action correctly failed on critical/high violations"
