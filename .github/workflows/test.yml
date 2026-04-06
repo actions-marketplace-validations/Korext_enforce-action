@@ -1,0 +1,87 @@
+name: Test Korext Enforce Action
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  test-violations:
+    name: Test - Violations Detected
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./
+        id: korext
+        with:
+          directory: test-fixtures/insecure
+          pack: web
+          fail-on-violations: 'false'
+
+      - name: Verify violations found
+        run: |
+          VIOLATIONS="${{ steps.korext.outputs.violations }}"
+          echo "Violations found: ${VIOLATIONS}"
+          if [ "${VIOLATIONS}" -eq 0 ]; then
+            echo "::error::Expected violations but found 0"
+            exit 1
+          fi
+          echo "PASS: Violations detected as expected"
+
+      - name: Verify SARIF file exists
+        run: |
+          SARIF="${{ steps.korext.outputs.sarif-file }}"
+          if [ ! -s "${SARIF}" ]; then
+            echo "::error::SARIF file not found or empty"
+            exit 1
+          fi
+          echo "PASS: SARIF file exists at ${SARIF}"
+          echo "SARIF preview:"
+          head -20 "${SARIF}"
+
+  test-clean:
+    name: Test - Clean Code
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./
+        id: korext
+        with:
+          directory: test-fixtures/clean
+          pack: web
+
+      - name: Verify clean pass
+        run: |
+          echo "Violations: ${{ steps.korext.outputs.violations }}"
+          echo "PASS: Clean code passed enforcement"
+
+  test-fail-gate:
+    name: Test - Quality Gate Failure
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./
+        id: korext
+        continue-on-error: true
+        with:
+          directory: test-fixtures/insecure
+          pack: web
+          fail-on-violations: 'true'
+
+      - name: Verify workflow failed
+        if: steps.korext.outcome == 'success'
+        run: |
+          echo "::error::Expected action to fail on violations but it passed"
+          exit 1
+
+      - name: Confirm expected failure
+        if: steps.korext.outcome == 'failure'
+        run: echo "PASS: Action correctly failed on critical/high violations"

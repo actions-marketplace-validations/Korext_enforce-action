@@ -1,0 +1,135 @@
+name: 'Korext Enforce'
+description: 'Enforce security, compliance, and quality standards on AI-generated code in GitHub Actions workflows'
+author: 'Korext'
+
+branding:
+  icon: 'shield'
+  color: 'orange'
+
+inputs:
+  directory:
+    description: 'Directory to scan for policy violations'
+    required: false
+    default: '.'
+  pack:
+    description: 'Policy Pack ID to enforce (e.g. web, owasp-top-10, hipaa-safeguards)'
+    required: false
+    default: 'web'
+  api-token:
+    description: 'Korext API token for authenticated mode. Set as a GitHub secret. Optional -- runs in anonymous mode (20 req/hr) without it.'
+    required: false
+    default: ''
+  fail-on-violations:
+    description: 'Fail the workflow when critical or high severity violations are found'
+    required: false
+    default: 'true'
+  sarif-upload:
+    description: 'Upload SARIF results to GitHub Code Scanning (requires security-events: write permission)'
+    required: false
+    default: 'true'
+
+outputs:
+  violations:
+    description: 'Total number of policy violations found'
+    value: ${{ steps.enforce.outputs.violations }}
+  sarif-file:
+    description: 'Path to the generated SARIF results file'
+    value: ${{ steps.enforce.outputs.sarif-file }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Install Korext CLI
+      shell: bash
+      run: |
+        echo "::group::Installing Korext CLI"
+        npm install -g korext@0.9.4 2>&1 || {
+          echo "::error::Failed to install Korext CLI. Check that npm is available."
+          exit 1
+        }
+        INSTALLED_VERSION=$(korext --version)
+        echo "Korext CLI v${INSTALLED_VERSION} installed"
+        echo "::endgroup::"
+
+    - name: Run Korext Enforcement
+      id: enforce
+      shell: bash
+      env:
+        KOREXT_API_TOKEN: ${{ inputs.api-token }}
+      run: |
+        SCAN_DIR="${{ inputs.directory }}"
+        PACK="${{ inputs.pack }}"
+        SARIF_FILE="${RUNNER_TEMP}/korext-results.sarif"
+
+        echo "::group::Korext Enforcement"
+        echo "Directory: ${SCAN_DIR}"
+        echo "Pack: ${PACK}"
+        if [ -n "${KOREXT_API_TOKEN}" ]; then
+          echo "Auth: Authenticated"
+        else
+          echo "Auth: Anonymous (20 requests/hour)"
+        fi
+        echo "::endgroup::"
+
+        # Run enforcement with SARIF output.
+        # The CLI writes GITHUB_STEP_SUMMARY automatically (even in SARIF mode).
+        # This single run gives us: SARIF file + step summary + exit code.
+        set +e
+        korext enforce "${SCAN_DIR}" --pack "${PACK}" --format sarif > "${SARIF_FILE}" 2>&1
+        ENFORCE_EXIT=$?
+        set -e
+
+        # Validate SARIF was produced
+        if [ ! -s "${SARIF_FILE}" ]; then
+          echo "::warning::SARIF file is empty. Enforcement may have encountered an error."
+          # Write minimal valid SARIF so upload does not fail
+          cat > "${SARIF_FILE}" << 'EMPTYSARIF'
+        {
+          "version": "2.1.0",
+          "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/errata01/os/schemas/sarif-schema-2.1.0.json",
+          "runs": [{ "tool": { "driver": { "name": "Korext", "rules": [] } }, "results": [] }]
+        }
+        EMPTYSARIF
+        fi
+
+        # Extract violation count from SARIF
+        VIOLATION_COUNT=$(cat "${SARIF_FILE}" | python3 -c "
+        import json, sys
+        try:
+            sarif = json.load(sys.stdin)
+            print(len(sarif.get('runs', [{}])[0].get('results', [])))
+        except:
+            print('0')
+        " 2>/dev/null || echo "0")
+
+        echo "violations=${VIOLATION_COUNT}" >> "$GITHUB_OUTPUT"
+        echo "sarif-file=${SARIF_FILE}" >> "$GITHUB_OUTPUT"
+        echo "enforce-exit=${ENFORCE_EXIT}" >> "$GITHUB_OUTPUT"
+
+        # Print human-readable summary to the log
+        if [ "${ENFORCE_EXIT}" -eq 0 ]; then
+          echo "::notice::Korext enforcement passed. ${VIOLATION_COUNT} violation(s) found (none critical/high)."
+        elif [ "${ENFORCE_EXIT}" -eq 1 ]; then
+          echo "::error::Korext enforcement found ${VIOLATION_COUNT} violation(s) with critical or high severity."
+        elif [ "${ENFORCE_EXIT}" -eq 2 ]; then
+          echo "::error::Korext enforcement encountered errors analyzing some files."
+        fi
+
+    - name: Upload SARIF to Code Scanning
+      if: ${{ inputs.sarif-upload == 'true' && always() }}
+      uses: github/codeql-action/upload-sarif@v3
+      continue-on-error: true
+      with:
+        sarif_file: ${{ steps.enforce.outputs.sarif-file }}
+        category: korext
+        wait-for-processing: false
+
+    - name: Evaluate Quality Gate
+      if: ${{ inputs.fail-on-violations == 'true' }}
+      shell: bash
+      run: |
+        ENFORCE_EXIT="${{ steps.enforce.outputs.enforce-exit }}"
+        if [ "${ENFORCE_EXIT}" -eq 1 ] || [ "${ENFORCE_EXIT}" -eq 2 ]; then
+          echo "::error::Quality gate failed. Critical or high severity violations detected."
+          exit 1
+        fi
