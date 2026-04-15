@@ -1,5 +1,5 @@
 name: 'Korext Enforce'
-description: 'Enforce security, compliance, and quality standards on AI-generated code in GitHub Actions workflows'
+description: 'Enforce security, compliance, and quality standards on AI generated code. 72 policy packs. Cryptographically signed proof bundles. Data sovereignty with regional processing.'
 author: 'Korext'
 
 branding:
@@ -27,6 +27,14 @@ inputs:
     description: 'Upload SARIF results to GitHub Code Scanning (requires security-events: write permission)'
     required: false
     default: 'true'
+  region:
+    description: 'Data processing region for sovereignty compliance (us, eu, apac). Leave empty for default (US).'
+    required: false
+    default: ''
+  sign-bundles:
+    description: 'Request cryptographically signed proof bundles for each scanned file (requires authentication)'
+    required: false
+    default: 'true'
 
 outputs:
   violations:
@@ -35,6 +43,15 @@ outputs:
   sarif-file:
     description: 'Path to the generated SARIF results file'
     value: ${{ steps.enforce.outputs.sarif-file }}
+  bundle-count:
+    description: 'Number of proof bundles generated'
+    value: ${{ steps.enforce.outputs.bundle-count }}
+  bundles-signed:
+    description: 'Number of signed proof bundles'
+    value: ${{ steps.enforce.outputs.bundles-signed }}
+  bundle-ids:
+    description: 'Comma separated list of proof bundle IDs'
+    value: ${{ steps.enforce.outputs.bundle-ids }}
 
 runs:
   using: 'composite'
@@ -43,7 +60,7 @@ runs:
       shell: bash
       run: |
         echo "::group::Installing Korext CLI"
-        npm install -g korext@0.9.5 || {
+        npm install -g korext@latest || {
           echo "::error::Failed to install Korext CLI. Check that npm is available."
           exit 1
         }
@@ -71,12 +88,23 @@ runs:
         fi
         echo "::endgroup::"
 
+        # Build CLI flags
+        REGION_FLAG=""
+        if [ -n "${{ inputs.region }}" ]; then
+          REGION_FLAG="--region ${{ inputs.region }}"
+        fi
+
+        SIGN_FLAG=""
+        if [ "${{ inputs.sign-bundles }}" = "true" ] && [ -n "${KOREXT_API_TOKEN}" ]; then
+          SIGN_FLAG="--sign"
+        fi
+
         # Run enforcement with SARIF output.
         # The CLI writes GITHUB_STEP_SUMMARY automatically (even in SARIF mode).
         # This single run gives us: SARIF file + step summary + exit code.
         # Redirect only stdout (SARIF JSON) to file; stderr goes to Actions log.
         set +e
-        korext enforce "${SCAN_DIR}" --pack "${PACK}" --format sarif > "${SARIF_FILE}"
+        korext enforce "${SCAN_DIR}" --pack "${PACK}" --format sarif ${SIGN_FLAG} ${REGION_FLAG} > "${SARIF_FILE}"
         ENFORCE_EXIT=$?
         set -e
 
@@ -100,6 +128,40 @@ runs:
         echo "violations=${VIOLATION_COUNT}" >> "$GITHUB_OUTPUT"
         echo "sarif-file=${SARIF_FILE}" >> "$GITHUB_OUTPUT"
         echo "enforce-exit=${ENFORCE_EXIT}" >> "$GITHUB_OUTPUT"
+
+        # Extract proof bundle info from SARIF properties
+        BUNDLE_COUNT=$(python3 -c "
+import json, sys
+try:
+    sarif = json.load(open('${SARIF_FILE}'))
+    props = sarif.get('runs', [{}])[0].get('properties', {})
+    print(props.get('korext:bundleCount', 0))
+except:
+    print('0')
+" 2>/dev/null || echo "0")
+        BUNDLES_SIGNED=$(python3 -c "
+import json, sys
+try:
+    sarif = json.load(open('${SARIF_FILE}'))
+    props = sarif.get('runs', [{}])[0].get('properties', {})
+    print(props.get('korext:bundlesSigned', 0))
+except:
+    print('0')
+" 2>/dev/null || echo "0")
+        BUNDLE_IDS=$(python3 -c "
+import json, sys
+try:
+    sarif = json.load(open('${SARIF_FILE}'))
+    props = sarif.get('runs', [{}])[0].get('properties', {})
+    ids = props.get('korext:bundleIds', [])
+    print(','.join(ids))
+except:
+    print('')
+" 2>/dev/null || echo "")
+
+        echo "bundle-count=${BUNDLE_COUNT}" >> "$GITHUB_OUTPUT"
+        echo "bundles-signed=${BUNDLES_SIGNED}" >> "$GITHUB_OUTPUT"
+        echo "bundle-ids=${BUNDLE_IDS}" >> "$GITHUB_OUTPUT"
 
         # Print human-readable summary to the log
         if [ "${ENFORCE_EXIT}" -eq 0 ]; then

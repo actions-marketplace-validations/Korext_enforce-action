@@ -1,9 +1,8 @@
-# Korext Enforce Action
+# KOREXT Enforce Action
 
-[![GitHub Marketplace](https://img.shields.io/badge/Marketplace-Korext%20Enforce-orange?logo=github)](https://github.com/marketplace/actions/korext-enforce)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+Enforce compliance policies on AI generated code in your GitHub workflows.
 
-Enforce security, compliance, and quality standards on AI-generated code directly in your GitHub workflows. Korext scans your codebase against policy packs and surfaces violations as GitHub Code Scanning annotations on pull requests.
+72 policy packs. 532 rules. 13 languages. Violations appear as GitHub Code Scanning annotations on pull requests.
 
 ## Quick Start
 
@@ -22,17 +21,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: Korext/enforce-action@v1
+      - uses: Korext/enforce-action@v3
+        with:
+          api-token: ${{ secrets.KOREXT_API_TOKEN }}
 ```
 
-That's it. Korext scans your code on every push and PR using the default `web` policy pack.
+Korext scans your code on every push and PR using the default `web` policy pack.
 
 ## How It Works
 
-1. **Install** -- The action installs the [Korext CLI](https://www.npmjs.com/package/korext) (`v0.9.5`)
-2. **Scan** -- Runs `korext enforce` against your codebase with the selected policy pack
-3. **Report** -- Generates a SARIF file and uploads it to GitHub Code Scanning
-4. **Gate** -- Fails the workflow if critical or high severity violations are found
+1. **Install**: The action installs the [Korext CLI](https://www.npmjs.com/package/korext)
+2. **Scan**: Runs `korext enforce` against your codebase with the selected policy pack
+3. **Report**: Generates a SARIF file and uploads it to GitHub Code Scanning
+4. **Gate**: Fails the workflow if critical or high severity violations are found
 
 Violations appear as annotations directly on the PR diff, powered by GitHub Code Scanning.
 
@@ -42,9 +43,11 @@ Violations appear as annotations directly on the PR diff, powered by GitHub Code
 |---|---|---|---|
 | `directory` | Directory to scan for policy violations | No | `.` |
 | `pack` | Policy Pack ID to enforce | No | `web` |
-| `api-token` | Korext API token for authenticated mode | No | _(anonymous)_ |
+| `api-token` | Korext API token for authenticated mode | No | (anonymous) |
 | `fail-on-violations` | Fail workflow on critical/high violations | No | `true` |
 | `sarif-upload` | Upload SARIF to GitHub Code Scanning | No | `true` |
+| `region` | Data processing region (us, eu, apac) | No | (default) |
+| `sign-bundles` | Request signed proof bundles | No | `true` |
 
 ## Outputs
 
@@ -52,136 +55,68 @@ Violations appear as annotations directly on the PR diff, powered by GitHub Code
 |---|---|
 | `violations` | Total number of policy violations found |
 | `sarif-file` | Path to the generated SARIF results file |
+| `bundle-count` | Number of proof bundles generated |
+| `bundles-signed` | Number of signed proof bundles |
+| `bundle-ids` | Comma separated list of proof bundle IDs |
 
 ## Examples
 
-### Basic usage (anonymous mode)
+### Multiple Policy Packs
 
 ```yaml
-- uses: actions/checkout@v4
-- uses: Korext/enforce-action@v1
-```
-
-### With authentication
-
-```yaml
-- uses: actions/checkout@v4
-- uses: Korext/enforce-action@v1
+- uses: Korext/enforce-action@v3
   with:
+    pack: web,pci-dss-v1,owasp-v1
     api-token: ${{ secrets.KOREXT_API_TOKEN }}
 ```
 
-### Custom policy pack
+### EU Data Sovereignty
 
 ```yaml
-- uses: actions/checkout@v4
-- uses: Korext/enforce-action@v1
+- uses: Korext/enforce-action@v3
   with:
-    pack: owasp-top-10
+    pack: gdpr-v1
+    region: eu
+    api-token: ${{ secrets.KOREXT_API_TOKEN }}
 ```
 
-### Scan a subdirectory
+### Scan Specific Directory
 
 ```yaml
-- uses: actions/checkout@v4
-- uses: Korext/enforce-action@v1
+- uses: Korext/enforce-action@v3
   with:
     directory: src/
+    pack: hipaa-v1
+    api-token: ${{ secrets.KOREXT_API_TOKEN }}
 ```
 
-### Warn but don't fail
+### Warn Only (do not fail)
 
 ```yaml
-- uses: actions/checkout@v4
-- uses: Korext/enforce-action@v1
+- uses: Korext/enforce-action@v3
   with:
+    pack: web
     fail-on-violations: 'false'
 ```
 
-### PR-only enforcement
+## Authentication
 
-```yaml
-name: Korext PR Check
-on: pull_request
+For full access to all policy packs and signed proof bundles, create an API token in your [KOREXT dashboard](https://app.korext.com) and add it as a GitHub secret:
 
-permissions:
-  contents: read
-  security-events: write
+1. Go to [app.korext.com](https://app.korext.com) > Settings > API Tokens
+2. Create a new token
+3. Add it as `KOREXT_API_TOKEN` in your repo's Settings > Secrets and variables > Actions
 
-jobs:
-  enforce:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: Korext/enforce-action@v1
-        with:
-          pack: web
-```
-
-### Use violation count in downstream steps
-
-```yaml
-- uses: actions/checkout@v4
-- uses: Korext/enforce-action@v1
-  id: korext
-  with:
-    fail-on-violations: 'false'
-- run: echo "Found ${{ steps.korext.outputs.violations }} violations"
-```
-
-## Permissions
-
-Your workflow must include:
-
-```yaml
-permissions:
-  contents: read          # Checkout repository
-  security-events: write  # Upload SARIF to Code Scanning
-```
-
-Without `security-events: write`, SARIF upload will be skipped.
-
-## Rate Limits
-
-| Mode | Limit | How to use |
-|---|---|---|
-| Anonymous (no token) | 20 requests per hour per IP | Default, no setup needed |
-| Authenticated | 500+ requests per period | Set `api-token` input |
-
-Each workflow run consumes 1 request (one `korext enforce` call). Anonymous mode is sufficient for most open-source projects. For high-traffic repos with many PRs, use an API token.
-
-## Code Scanning
-
-When `sarif-upload` is `true` (the default), the action uploads SARIF results to GitHub Code Scanning. Violations appear as annotations on the PR diff with severity levels:
-
-- **Error** -- Critical and high severity violations
-- **Warning** -- Medium severity violations
-- **Note** -- Low severity violations
-
-> **Note:** GitHub Code Scanning is free for public repositories. Private repositories require [GitHub Advanced Security](https://docs.github.com/en/get-started/learning-about-github/about-github-advanced-security).
-
-## Supported File Types
-
-Korext scans the following file types:
-
-`.ts` `.tsx` `.js` `.jsx` `.py` `.go` `.java` `.rs`
-
-The scanner automatically skips `node_modules`, `.git`, `dist`, `build`, and `.next` directories.
-
-## Exit Codes
-
-| Exit Code | Meaning | Action Behavior |
-|---|---|---|
-| 0 | No violations, or only medium/low severity | Workflow passes |
-| 1 | Critical or high severity violations found | Workflow fails (if `fail-on-violations` is `true`) |
-| 2 | Errors analyzing some files | Workflow fails |
+Without a token, the action runs in anonymous mode (20 requests per hour, limited packs).
 
 ## Links
 
-- [Korext Platform](https://app.korext.com)
-- [Korext CLI on npm](https://www.npmjs.com/package/korext)
-- [Korext Website](https://www.korext.com)
+- [Website](https://korext.com)
+- [Dashboard](https://app.korext.com)
+- [Documentation](https://korext.com/docs)
+- [CLI on npm](https://www.npmjs.com/package/korext)
+- [VS Code Extension](https://marketplace.visualstudio.com/items?itemName=Korext.korext)
 
 ## License
 
-[MIT](LICENSE)
+Proprietary. See [Terms of Service](https://korext.com/legal).
